@@ -4,10 +4,10 @@
     "version": "1.0",
     "description": "Shows development type point summaries (FE, BE, Fullstack) on Jira sprint boards",
     "permissions": ["activeTab"],
-    "host_permissions": ["*://*.atlassian.net/*"],
+    "host_permissions": ["*://pitchtech.atlassian.net/*"],
     "content_scripts": [
       {
-        "matches": ["*://*.atlassian.net/*"],
+        "matches": ["*://pitchtech.atlassian.net/*"],
         "js": ["content.js"],
         "css": ["styles.css"]
       }
