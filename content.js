@@ -2,31 +2,120 @@
 let injectedSprints = new Set();
 // Store sprint data for summary calculations
 let sprintData = new Map();
+// Store board information
+let boardInfo = {
+  boardId: null,
+  boardType: null,
+  usesEstimations: false
+};
 
 /**
  * Main function to add dev type summaries to the Jira UI
  */
 function addDevTypeSummaries() {
-  console.log("[Sprint Summary] Adding summary elements");
+  console.log("[Sprint Summary] Starting summary process");
   
+  // Only run on backlog pages
   if (!window.location.href.includes('backlog')) {
     console.log("[Sprint Summary] Not on backlog page, skipping");
     return;
   }
   
-  // If we already have sprint data, update the UI
-  if (sprintData.size > 0) {
-    updateUI();
-  } else {
-    // Otherwise, fetch the data first
-    fetchSprintData().then(() => {
+  // Check if this is a SCRUM board that uses estimations
+  detectBoardTypeAndEstimations().then(({ isScrum, usesEstimations }) => {
+    if (!isScrum) {
+      console.log("[Sprint Summary] Not a SCRUM board, skipping");
+      return;
+    }
+    
+    if (!usesEstimations) {
+      console.log("[Sprint Summary] Board doesn't use estimations, skipping");
+      return;
+    }
+    
+    console.log("[Sprint Summary] SCRUM board with estimations detected, proceeding");
+    
+    // If we already have sprint data, update the UI
+    if (sprintData.size > 0) {
       updateUI();
-    }).catch(error => {
-      console.error("[Sprint Summary] Error fetching sprint data:", error);
-      // Fallback to placeholder values if API fetch fails
-      updateUI(true);
-    });
+    } else {
+      // Otherwise, fetch the data first
+      fetchSprintData().then(() => {
+        updateUI();
+      }).catch(error => {
+        console.error("[Sprint Summary] Error fetching sprint data:", error);
+        // Fallback to placeholder values if API fetch fails
+        updateUI(true);
+      });
+    }
+  });
+}
+
+/**
+ * Detects the board type and whether it uses estimations
+ */
+async function detectBoardTypeAndEstimations() {
+  // Extract board ID
+  const boardId = extractBoardId();
+  boardInfo.boardId = boardId;
+  
+  console.log(`[Sprint Summary] Checking board ${boardId} type via API`);
+  
+  // Use only the API method to detect board type
+  try {
+    const response = await fetch(`/rest/agile/1.0/board/${boardId}/configuration`);
+    
+    if (response.ok) {
+      const data = await response.json();
+      boardInfo.boardType = data.type ? data.type.toUpperCase() : null;
+      console.log(`[Sprint Summary] Board type: ${boardInfo.boardType}`);
+      
+      // Check if the board has an estimation field configured
+      boardInfo.usesEstimations = !!(data.estimation && data.estimation.field);
+      
+      if (boardInfo.usesEstimations) {
+        console.log(`[Sprint Summary] Board uses estimations: ${data.estimation.field.name}`);
+      } else {
+        console.log('[Sprint Summary] No estimation field configured in board settings');
+      }
+      
+      return {
+        isScrum: boardInfo.boardType === 'SCRUM',
+        usesEstimations: boardInfo.usesEstimations
+      };
+    } else {
+      console.log(`[Sprint Summary] API request failed with status: ${response.status}`);
+      return { isScrum: false, usesEstimations: false };
+    }
+  } catch (error) {
+    console.log("[Sprint Summary] Could not fetch board configuration:", error);
+    return { isScrum: false, usesEstimations: false };
   }
+}
+
+// Remove the now unused detectBoardTypeFromDOM function
+
+// Remove the checkEstimationsFromDOM function since we're not using it anymore
+
+/**
+ * Extracts the board ID from the current URL
+ */
+function extractBoardId() {
+  // First try modern URL format: boards/XX
+  let matches = window.location.href.match(/boards\/(\d+)/);
+  
+  if (matches && matches[1]) {
+    return matches[1];
+  }
+  
+  // Try legacy format: rapidView=XX
+  matches = window.location.href.match(/rapidView=(\d+)/);
+  
+  if (matches && matches[1]) {
+    return matches[1];
+  }
+  
+  return '24'; // Default fallback value
 }
 
 /**
@@ -35,26 +124,50 @@ function addDevTypeSummaries() {
 async function fetchSprintData() {
   console.log("[Sprint Summary] Fetching sprint data from API");
   
-  // Get the rapidViewId from the URL
-  const matches = window.location.href.match(/rapidView=(\d+)/);
-  let rapidViewId = 24; // Default fallback value
+  try {
+    // Extract the board ID from the URL
+    let boardId = extractBoardId();
+    console.log(`[Sprint Summary] Using board ID: ${boardId}`);
+    
+    // Construct the API endpoint using the board ID
+    const apiEndpoint = `https://pitchtech.atlassian.net/rest/greenhopper/1.0/xboard/plan/v2/backlog/data?forceConsistency=true&operation=fetchBacklogData&rapidViewId=${boardId}`;
+    console.log(`[Sprint Summary] API endpoint: ${apiEndpoint}`);
+    
+    const response = await fetch(apiEndpoint);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    // Process the data into our sprintData map
+    processSprintData(data);
+  } catch (error) {
+    console.error("[Sprint Summary] Error fetching sprint data:", error);
+    throw error;
+  }
+}
+
+/**
+ * Extracts the board ID from the current URL
+ */
+function extractBoardId() {
+  // First try modern URL format: boards/XX/backlog
+  let matches = window.location.href.match(/boards\/(\d+)/);
+  let boardId = '24'; // Default fallback value
   
   if (matches && matches[1]) {
-    rapidViewId = matches[1];
+    boardId = matches[1];
+  } else {
+    // Fallback to legacy URL format: rapidView=XX
+    matches = window.location.href.match(/rapidView=(\d+)/);
+    if (matches && matches[1]) {
+      boardId = matches[1];
+    }
   }
   
-  const url = `https://pitchtech.atlassian.net/rest/greenhopper/1.0/xboard/plan/v2/backlog/data?forceConsistency=true&operation=fetchBacklogData&rapidViewId=${rapidViewId}`;
-  
-  const response = await fetch(url);
-  
-  if (!response.ok) {
-    throw new Error(`HTTP error! Status: ${response.status}`);
-  }
-  
-  const data = await response.json();
-  
-  // Process the data into our sprintData map
-  processSprintData(data);
+  return boardId;
 }
 
 /**
