@@ -1,213 +1,128 @@
-// Configuration
-const MAX_RETRY_ATTEMPTS = 3;
-const RETRY_DELAY = 3000; // 3 seconds
-let attemptCount = 0;
-let injectedSprints = new Set(); // Track which sprints we've already injected into
+// Track which sprints we've already injected into
+let injectedSprints = new Set();
+// Store sprint data for summary calculations
+let sprintData = new Map();
 
-// Main function that runs on page load and whenever DOM changes
+/**
+ * Main function to add dev type summaries to the Jira UI
+ */
 function addDevTypeSummaries() {
-  console.log("[Sprint Summary] Extension running, attempt:", attemptCount + 1);
+  console.log("[Sprint Summary] Adding summary elements");
   
-  // Safety check - don't try too many times
-  if (attemptCount >= MAX_RETRY_ATTEMPTS) {
-    console.log("[Sprint Summary] Max retry attempts reached, stopping");
-    return;
-  }
-  
-  attemptCount++;
-  
-  // Only run on backlog pages
   if (!window.location.href.includes('backlog')) {
     console.log("[Sprint Summary] Not on backlog page, skipping");
     return;
   }
   
-  // Get the sprint container
-  const sprintContainers = document.querySelectorAll('[data-test-id*="sprint-container"], [class*="sprint-container"], [role="row"]');
-  console.log("[Sprint Summary] Found sprint containers:", sprintContainers.length);
+  // If we already have sprint data, update the UI
+  if (sprintData.size > 0) {
+    updateUI();
+  } else {
+    // Otherwise, fetch the data first
+    fetchSprintData().then(() => {
+      updateUI();
+    }).catch(error => {
+      console.error("[Sprint Summary] Error fetching sprint data:", error);
+      // Fallback to placeholder values if API fetch fails
+      updateUI(true);
+    });
+  }
+}
+
+/**
+ * Fetches sprint and issue data from the Jira API
+ */
+async function fetchSprintData() {
+  console.log("[Sprint Summary] Fetching sprint data from API");
   
-  if (sprintContainers.length === 0) {
-    // No sprint containers found, retry after delay
-    console.log("[Sprint Summary] No sprint containers found, will retry later");
-    scheduleRetry();
-    return;
+  // Get the rapidViewId from the URL
+  const matches = window.location.href.match(/rapidView=(\d+)/);
+  let rapidViewId = 24; // Default fallback value
+  
+  if (matches && matches[1]) {
+    rapidViewId = matches[1];
   }
   
-  let processedAny = false;
+  const url = `https://pitchtech.atlassian.net/rest/greenhopper/1.0/xboard/plan/v2/backlog/data?forceConsistency=true&operation=fetchBacklogData&rapidViewId=${rapidViewId}`;
   
-  // Process each sprint container
-  sprintContainers.forEach((container, index) => {
-    // Create a unique ID for this container to avoid duplicate processing
-    const containerId = container.getAttribute('data-test-id') || 
-                        container.getAttribute('id') || 
-                        `sprint-container-${index}`;
-    
-    // Skip if we've already processed this sprint
-    if (injectedSprints.has(containerId)) {
-      return;
-    }
-    
-    // Look for sprint header or title
-    const sprintHeader = container.querySelector('[data-test-id*="sprint-header"], [class*="sprint-header"], [role="rowheader"]');
-    if (!sprintHeader) {
-      return; // Not a sprint container
-    }
-    
-    // Get all issues in this sprint
-    const issues = container.querySelectorAll('[data-test-id*="card"], [class*="ghx-issue"], [class*="js-issue"], [role="row"]:not([role="rowheader"])');
-    console.log(`[Sprint Summary] Sprint ${index}: Found ${issues.length} issues`);
-    
-    if (issues.length === 0) {
-      return; // No issues to process
-    }
-    
-    // Calculate points
-    const summary = calculateDevTypeSummary(issues);
-    console.log(`[Sprint Summary] Sprint ${index}: Summary calculated:`, summary);
-    
-    // Look for the stats area (with numbers 31 46 0)
-    const statsArea = container.querySelector('.css-np5xyz, [class*="complete-sprint"]');
-    
-    if (statsArea) {
-      // Create a new element to add before the stats
-      const summaryElement = createSummaryElement(summary);
-      
-      // Insert the summary before the stats
-      const parentElement = statsArea.parentElement;
-      if (parentElement) {
-        parentElement.insertBefore(summaryElement, statsArea);
-        console.log(`[Sprint Summary] Sprint ${index}: Summary added successfully`);
-        processedAny = true;
-        injectedSprints.add(containerId); // Mark as processed
+  const response = await fetch(url);
+  
+  if (!response.ok) {
+    throw new Error(`HTTP error! Status: ${response.status}`);
+  }
+  
+  const data = await response.json();
+  
+  // Process the data into our sprintData map
+  processSprintData(data);
+}
+
+/**
+ * Processes the raw API data into a structured format for our summaries
+ */
+function processSprintData(data) {
+  console.log("[Sprint Summary] Processing API data");
+  
+  // Clear existing data
+  sprintData.clear();
+  
+  const sprints = data.sprints || [];
+  const issues = data.issues || [];
+  
+  console.log(`[Sprint Summary] Found ${sprints.length} sprints and ${issues.length} issues`);
+  
+  // Initialize the map with sprint objects
+  sprints.forEach(sprint => {
+    sprintData.set(sprint.id, {
+      id: sprint.id,
+      name: sprint.name,
+      state: sprint.state,
+      summary: {
+        BE: 0,
+        FE: 0,
+        Fullstack: 0
       }
-    }
+    });
   });
   
-  // If we didn't process any sprints, schedule a retry
-  if (!processedAny && attemptCount < MAX_RETRY_ATTEMPTS) {
-    console.log("[Sprint Summary] No sprints were processed, will retry later");
-    scheduleRetry();
-  }
-}
-
-function createSummaryElement(summary) {
-  // Create container
-  const container = document.createElement('span');
-  container.className = 'dev-type-summary';
-  container.style.marginRight = '16px';
-  container.style.display = 'inline-block';
-  container.style.fontSize = '12px';
-  
-  // Create BE element
-  const beElement = document.createElement('span');
-  beElement.className = 'dev-type-be';
-  beElement.textContent = `BE: ${summary.BE}`;
-  beElement.style.color = '#0052cc';
-  beElement.style.marginRight = '8px';
-  container.appendChild(beElement);
-  
-  // Create FE element
-  const feElement = document.createElement('span');
-  feElement.className = 'dev-type-fe';
-  feElement.textContent = `FE: ${summary.FE}`;
-  feElement.style.color = '#00875a';
-  feElement.style.marginRight = '8px';
-  container.appendChild(feElement);
-  
-  // Create Fullstack element
-  const fullstackElement = document.createElement('span');
-  fullstackElement.className = 'dev-type-fullstack';
-  fullstackElement.textContent = `FS: ${summary.Fullstack}`;
-  fullstackElement.style.color = '#6554c0';
-  container.appendChild(fullstackElement);
-  
-  return container;
-}
-
-function calculateDevTypeSummary(issues) {
-  // Initialize counters
-  const summary = {
-    BE: 0,
-    FE: 0,
-    Fullstack: 0
-  };
-  
+  // Process each issue
   issues.forEach(issue => {
-    // Skip if this isn't really an issue
-    if (issue.querySelector('[role="rowheader"]')) {
-      return;
-    }
+    const sprintIds = issue.sprintIds || [];
+    const storyPoints = issue.estimateStatistic?.statFieldValue?.value || 0;
+    const summary = issue.summary || '';
     
-    // Get the story points
-    let storyPoints = 0;
-    const pointsElement = issue.querySelector('[data-test-id*="estimation"], [class*="ghx-estimate"], [class*="aui-badge"]');
-    
-    if (pointsElement) {
-      const pointsText = pointsElement.textContent.trim();
-      storyPoints = parseInt(pointsText) || 0;
-    } else {
-      // Try to find points in the last cell of the row
-      const cells = issue.querySelectorAll('[role="cell"]');
-      if (cells.length > 0) {
-        const lastCell = cells[cells.length - 1];
-        const text = lastCell.textContent.trim();
-        if (/^\d+$/.test(text)) {
-          storyPoints = parseInt(text) || 0;
-        }
-      }
-    }
-    
-    // If no story points, no need to categorize
     if (storyPoints === 0) {
-      return;
+      return; // Skip issues with no story points
     }
     
-    // Get the issue summary
-    let summaryText = '';
-    const summaryElement = issue.querySelector('[data-test-id*="summary"], [class*="ghx-summary"], [class*="js-issue-title"]');
+    const devType = getDevType(summary);
     
-    if (summaryElement) {
-      summaryText = summaryElement.textContent.trim();
-    } else {
-      // Try to find the summary in any cell
-      const cells = issue.querySelectorAll('[role="cell"]');
-      for (const cell of cells) {
-        const text = cell.textContent.trim();
-        if (text.includes('[BE]') || text.includes('[FE]') || text.includes('[Fullstack]')) {
-          summaryText = text;
-          break;
-        }
+    // Add points to appropriate sprints
+    sprintIds.forEach(sprintId => {
+      if (sprintData.has(sprintId) && devType !== 'Other') {
+        sprintData.get(sprintId).summary[devType] += storyPoints;
       }
-      
-      // If still no summary, use the entire issue text
-      if (!summaryText) {
-        summaryText = issue.textContent.trim();
-      }
-    }
-    
-    if (!summaryText) {
-      return;
-    }
-    
-    const devType = getDevType(summaryText);
-    
-    // Add to the appropriate counter
-    if (devType !== 'Other') {
-      summary[devType] += storyPoints;
-    }
+    });
   });
   
-  return summary;
+  // Log the processed data
+  console.log("[Sprint Summary] Processed sprint data:");
+  sprintData.forEach((data, id) => {
+    console.log(`  Sprint ${data.name} (${id}): BE=${data.summary.BE}, FE=${data.summary.FE}, FS=${data.summary.Fullstack}`);
+  });
 }
 
+/**
+ * Determines the development type based on the issue summary/title
+ */
 function getDevType(summary) {
   const lowerSummary = summary.toLowerCase();
   
-  if (lowerSummary.includes('[fullstack]')) {
+  if (lowerSummary.includes('[fullstack]') || lowerSummary.includes('[fs]')) {
     return 'Fullstack';
-  } else if (lowerSummary.includes('[fe]')) {
+  } else if (lowerSummary.includes('[fe]') || lowerSummary.includes('[frontend]')) {
     return 'FE';
-  } else if (lowerSummary.includes('[be]')) {
+  } else if (lowerSummary.includes('[be]') || lowerSummary.includes('[backend]')) {
     return 'BE';
   } else {
     // Default to 'Other' but don't count it in our summaries
@@ -215,72 +130,131 @@ function getDevType(summary) {
   }
 }
 
-function scheduleRetry() {
-  // Only schedule a retry if we haven't reached the maximum attempts
-  if (attemptCount < MAX_RETRY_ATTEMPTS) {
-    console.log(`[Sprint Summary] Scheduling retry ${attemptCount}/${MAX_RETRY_ATTEMPTS} in ${RETRY_DELAY}ms`);
-    setTimeout(addDevTypeSummaries, RETRY_DELAY);
-  }
+/**
+ * Creates the summary element with dev type points
+ */
+function createSummaryElement(summary) {
+  // Create container with new gray background
+  const container = document.createElement('span');
+  container.className = 'dev-type-summary';
+  // Apply inline styles for background and spacing
+  container.style.backgroundColor = '#dddee1';
+  container.style.padding = '4px 8px';
+  container.style.borderRadius = '3px';
+  container.style.display = 'inline-flex';
+  container.style.marginRight = '16px';
+  container.style.fontSize = '12px';
+  container.style.alignItems = 'center';
+  container.style.gap = '8px';
+  
+  // Create BE element with darker blue
+  const beElement = document.createElement('span');
+  beElement.className = 'dev-type-be';
+  beElement.textContent = `BE: ${summary.BE}`;
+  beElement.style.color = '#0747A6';  // Darker blue
+  beElement.style.fontWeight = '500';
+  container.appendChild(beElement);
+  
+  // Create FE element with darker green
+  const feElement = document.createElement('span');
+  feElement.className = 'dev-type-fe';
+  feElement.textContent = `FE: ${summary.FE}`;
+  feElement.style.color = '#006644';  // Darker green
+  feElement.style.fontWeight = '500';
+  container.appendChild(feElement);
+  
+  // Create Fullstack element with darker purple
+  const fullstackElement = document.createElement('span');
+  fullstackElement.className = 'dev-type-fullstack';
+  fullstackElement.textContent = `FS: ${summary.Fullstack}`;
+  fullstackElement.style.color = '#403294';  // Darker purple
+  fullstackElement.style.fontWeight = '500';
+  container.appendChild(fullstackElement);
+  container.appendChild(fullstackElement);
+  
+  return container;
 }
+
+/**
+ * Updates the UI with dev type summaries
+ */
+function updateUI(usePlaceholders = false) {
+  const estimationContainers = document.querySelectorAll('[data-testid*="estimations-and-actions-container"]');
+  console.log("[Sprint Summary] Found estimation containers:", estimationContainers.length);
+  
+  estimationContainers.forEach((estimationContainer, index) => {
+    const statsArea = estimationContainer.parentElement;
+    
+    if (!statsArea) {
+      return;
+    }
+    
+    const sprintContainer = estimationContainer.closest('[data-drop-target-for-element="true"]');
+    
+    if (!sprintContainer) {
+      return;
+    }
+    
+    const sprintName = sprintContainer.querySelector('h2')?.textContent || `sprint-${index}`;
+    const containerId = sprintName.replace(/\s+/g, '-');
+    
+    // Check if we've already added a summary to this sprint
+    if (injectedSprints.has(containerId)) {
+      return;
+    }
+    
+    // Find the matching sprint data
+    let summary = { BE: 0, FE: 0, Fullstack: 0 };
+    
+    if (!usePlaceholders) {
+      // Look for matching sprint by name
+      for (const [_, data] of sprintData.entries()) {
+        if (data.name === sprintName) {
+          summary = data.summary;
+          break;
+        }
+      }
+    }
+    
+    console.log(`[Sprint Summary] ${sprintName}: Adding summary`, summary);
+    
+    const summaryElement = createSummaryElement(summary);
+    
+    statsArea.insertBefore(summaryElement, statsArea.firstChild);
+    
+    console.log(`[Sprint Summary] ${sprintName}: Summary added successfully`);
+    injectedSprints.add(containerId);
+  });
+}
+
+// We're removing the API interception since we only need to update on page load
 
 // Run on page load
 console.log("[Sprint Summary] Extension loaded");
 
-// Wait for page to load before first attempt
+// Wait for page to load before running
 setTimeout(function() {
-  // Reset attempt count for initial run
-  attemptCount = 0;
+  // Run once on page load
   addDevTypeSummaries();
   
-  // Set up a MutationObserver to handle dynamic content loading
-  const observer = new MutationObserver(function(mutations) {
-    // Check if any mutation adds a relevant node
-    let shouldUpdate = false;
-    mutations.forEach(function(mutation) {
-      if (mutation.addedNodes && mutation.addedNodes.length > 0) {
-        for (let i = 0; i < mutation.addedNodes.length; i++) {
-          const node = mutation.addedNodes[i];
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            // Only trigger if a meaningful element is added
-            if (node.querySelector('[data-test-id*="sprint-container"], [class*="sprint-container"], [role="row"]')) {
-              shouldUpdate = true;
-              break;
-            }
-          }
-        }
-      }
-    });
-    
-    if (shouldUpdate) {
-      console.log("[Sprint Summary] DOM changes detected, updating");
-      // Reset attempt count for observer-triggered runs
-      attemptCount = 0;
-      addDevTypeSummaries();
-    }
-  });
-  
-  // Start observing the document with the configured parameters
-  observer.observe(document.body, { childList: true, subtree: true });
-  
-  // Also add event listener for URL changes since Jira is a SPA
+  // Only listen for URL changes to handle navigation in the SPA
   let lastUrl = location.href; 
   new MutationObserver(() => {
     const url = location.href;
     if (url !== lastUrl) {
       console.log("[Sprint Summary] URL changed, updating");
       lastUrl = url;
-      // Reset attempt count for URL-change-triggered runs
-      attemptCount = 0;
+      // Reset injected sprints when the URL changes
+      injectedSprints.clear();
       addDevTypeSummaries();
     }
   }).observe(document, {subtree: true, childList: true});
   
-}, 1000);
+}, 1500); // Slightly longer timeout to ensure page is fully loaded
 
 // Add manual trigger for debugging
 window.triggerSprintSummary = function() {
   console.log("[Sprint Summary] Manual trigger");
-  // Reset attempt count for manual triggers
-  attemptCount = 0;
+  injectedSprints.clear();
   addDevTypeSummaries();
 };
