@@ -93,10 +93,6 @@ async function detectBoardTypeAndEstimations() {
   }
 }
 
-// Remove the now unused detectBoardTypeFromDOM function
-
-// Remove the checkEstimationsFromDOM function since we're not using it anymore
-
 /**
  * Extracts the board ID from the current URL
  */
@@ -150,27 +146,6 @@ async function fetchSprintData() {
 }
 
 /**
- * Extracts the board ID from the current URL
- */
-function extractBoardId() {
-  // First try modern URL format: boards/XX/backlog
-  let matches = window.location.href.match(/boards\/(\d+)/);
-  let boardId = '24'; // Default fallback value
-  
-  if (matches && matches[1]) {
-    boardId = matches[1];
-  } else {
-    // Fallback to legacy URL format: rapidView=XX
-    matches = window.location.href.match(/rapidView=(\d+)/);
-    if (matches && matches[1]) {
-      boardId = matches[1];
-    }
-  }
-  
-  return boardId;
-}
-
-/**
  * Processes the raw API data into a structured format for our summaries
  */
 function processSprintData(data) {
@@ -184,6 +159,9 @@ function processSprintData(data) {
   
   console.log(`[Sprint Summary] Found ${sprints.length} sprints and ${issues.length} issues`);
   
+  // Define done statuses
+  const doneStatuses = ['Closed', 'Done', 'On Prod', 'On RC', "Won't Do"];
+  
   // Initialize the map with sprint objects
   sprints.forEach(sprint => {
     sprintData.set(sprint.id, {
@@ -194,6 +172,11 @@ function processSprintData(data) {
         BE: 0,
         FE: 0,
         Fullstack: 0
+      },
+      detailed: {
+        BE: { inProgress: 0, done: 0 },
+        FE: { inProgress: 0, done: 0 },
+        Fullstack: { inProgress: 0, done: 0 }
       }
     });
   });
@@ -203,25 +186,40 @@ function processSprintData(data) {
     const sprintIds = issue.sprintIds || [];
     const storyPoints = issue.estimateStatistic?.statFieldValue?.value || 0;
     const summary = issue.summary || '';
+    const status = issue.statusName || '';
     
     if (storyPoints === 0) {
       return; // Skip issues with no story points
     }
     
     const devType = getDevType(summary);
+    const isDone = doneStatuses.includes(status);
     
-    // Add points to appropriate sprints
-    sprintIds.forEach(sprintId => {
-      if (sprintData.has(sprintId) && devType !== 'Other') {
-        sprintData.get(sprintId).summary[devType] += storyPoints;
+    // Only count the issue in its most recent sprint to avoid double-counting
+    // Issues can be in multiple sprints when moved between sprints
+    if (sprintIds.length > 0 && devType !== 'Other') {
+      // Get the most recent sprint ID (assume they're ordered chronologically)
+      const mostRecentSprintId = sprintIds[sprintIds.length - 1];
+      
+      if (sprintData.has(mostRecentSprintId)) {
+        const sprintInfo = sprintData.get(mostRecentSprintId);
+        sprintInfo.summary[devType] += storyPoints;
+        
+        // Add to detailed breakdown
+        if (isDone) {
+          sprintInfo.detailed[devType].done += storyPoints;
+        } else {
+          sprintInfo.detailed[devType].inProgress += storyPoints;
+        }
       }
-    });
+    }
   });
   
   // Log the processed data
   console.log("[Sprint Summary] Processed sprint data:");
   sprintData.forEach((data, id) => {
     console.log(`  Sprint ${data.name} (${id}): BE=${data.summary.BE}, FE=${data.summary.FE}, FS=${data.summary.Fullstack}`);
+    console.log(`    Detailed: BE(${data.detailed.BE.inProgress}/${data.detailed.BE.done}), FE(${data.detailed.FE.inProgress}/${data.detailed.FE.done}), FS(${data.detailed.Fullstack.inProgress}/${data.detailed.Fullstack.done})`);
   });
 }
 
@@ -244,9 +242,106 @@ function getDevType(summary) {
 }
 
 /**
- * Creates the summary element with dev type points
+ * Creates a detailed tooltip with breakdown by status
  */
-function createSummaryElement(summary) {
+function createTooltip(detailedData) {
+  const tooltip = document.createElement('div');
+  tooltip.className = 'dev-type-tooltip';
+  
+  // Create the table-like structure
+  const table = document.createElement('div');
+  table.style.display = 'grid';
+  table.style.gridTemplateColumns = '1fr 1fr 1fr';
+  table.style.gap = '16px';
+  table.style.minWidth = '240px';
+  
+  // Create headers
+  const headers = ['BE', 'FE', 'FS'];
+  headers.forEach(header => {
+    const headerElement = document.createElement('div');
+    headerElement.textContent = header;
+    headerElement.style.fontWeight = 'bold';
+    headerElement.style.textAlign = 'center';
+    headerElement.style.marginBottom = '8px';
+    headerElement.style.color = '#fff';
+    table.appendChild(headerElement);
+  });
+  
+  // Create data rows
+  const types = ['BE', 'FE', 'Fullstack'];
+  types.forEach(type => {
+    const column = document.createElement('div');
+    column.style.textAlign = 'center';
+    
+    const inProgressValue = detailedData[type]?.inProgress || 0;
+    const doneValue = detailedData[type]?.done || 0;
+    
+    // In Progress row
+    const inProgressRow = document.createElement('div');
+    inProgressRow.textContent = `In Progress: ${inProgressValue}`;
+    inProgressRow.style.marginBottom = '4px';
+    inProgressRow.style.color = '#ffcc99'; // Light orange for in progress
+    column.appendChild(inProgressRow);
+    
+    // Done row
+    const doneRow = document.createElement('div');
+    doneRow.textContent = `Done: ${doneValue}`;
+    doneRow.style.color = '#99ff99'; // Light green for done
+    column.appendChild(doneRow);
+    
+    table.appendChild(column);
+  });
+  
+  tooltip.appendChild(table);
+  
+  // Style the tooltip
+  tooltip.style.position = 'absolute';
+  tooltip.style.backgroundColor = '#333';
+  tooltip.style.color = 'white';
+  tooltip.style.padding = '12px 16px';
+  tooltip.style.borderRadius = '4px';
+  tooltip.style.fontSize = '12px';
+  tooltip.style.zIndex = '10000';
+  tooltip.style.pointerEvents = 'none';
+  tooltip.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.2)';
+  tooltip.style.opacity = '0';
+  tooltip.style.transition = 'opacity 0.2s ease-in-out';
+  
+  document.body.appendChild(tooltip);
+  
+  return tooltip;
+}
+
+/**
+ * Positions the tooltip relative to the target element
+ */
+function positionTooltip(tooltip, targetElement, event) {
+  const rect = targetElement.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  
+  // Position below the element by default
+  let left = rect.left + (rect.width - tooltipRect.width) / 2;
+  let top = rect.bottom + 8;
+  
+  // Keep tooltip within viewport bounds
+  if (left < 8) left = 8;
+  if (left + tooltipRect.width > window.innerWidth - 8) {
+    left = window.innerWidth - tooltipRect.width - 8;
+  }
+  
+  // If tooltip would be cut off at the bottom, position it above instead
+  if (top + tooltipRect.height > window.innerHeight - 8) {
+    top = rect.top - tooltipRect.height - 8;
+  }
+  
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = top + 'px';
+}
+
+/**
+ * Creates the summary element with dev type points and tooltip functionality
+ */
+function createSummaryElement(summary, detailedData) {
   // Create container with new gray background
   const container = document.createElement('span');
   container.className = 'dev-type-summary';
@@ -259,6 +354,7 @@ function createSummaryElement(summary) {
   container.style.fontSize = '12px';
   container.style.alignItems = 'center';
   container.style.gap = '8px';
+  container.style.cursor = 'help'; // Show help cursor on hover
   
   // Create BE element with darker blue
   const beElement = document.createElement('span');
@@ -283,7 +379,40 @@ function createSummaryElement(summary) {
   fullstackElement.style.color = '#403294';  // Darker purple
   fullstackElement.style.fontWeight = '500';
   container.appendChild(fullstackElement);
-  container.appendChild(fullstackElement);
+  
+  // Add tooltip functionality
+  let tooltip = null;
+  
+  container.addEventListener('mouseenter', (event) => {
+    tooltip = createTooltip(detailedData);
+    
+    // Position and show tooltip after a brief delay
+    setTimeout(() => {
+      if (tooltip && document.body.contains(tooltip)) {
+        positionTooltip(tooltip, container, event);
+        tooltip.style.opacity = '1';
+      }
+    }, 100);
+  });
+  
+  container.addEventListener('mouseleave', () => {
+    if (tooltip && document.body.contains(tooltip)) {
+      tooltip.style.opacity = '0';
+      setTimeout(() => {
+        if (tooltip && document.body.contains(tooltip)) {
+          document.body.removeChild(tooltip);
+        }
+        tooltip = null;
+      }, 200);
+    }
+  });
+  
+  // Update tooltip position on mouse move (for better positioning)
+  container.addEventListener('mousemove', (event) => {
+    if (tooltip && document.body.contains(tooltip)) {
+      positionTooltip(tooltip, container, event);
+    }
+  });
   
   return container;
 }
@@ -318,12 +447,18 @@ function updateUI(usePlaceholders = false) {
     
     // Find the matching sprint data
     let summary = { BE: 0, FE: 0, Fullstack: 0 };
+    let detailedData = {
+      BE: { inProgress: 0, done: 0 },
+      FE: { inProgress: 0, done: 0 },
+      Fullstack: { inProgress: 0, done: 0 }
+    };
     
     if (!usePlaceholders) {
       // Look for matching sprint by name
       for (const [_, data] of sprintData.entries()) {
         if (data.name === sprintName) {
           summary = data.summary;
+          detailedData = data.detailed;
           break;
         }
       }
@@ -331,7 +466,7 @@ function updateUI(usePlaceholders = false) {
     
     console.log(`[Sprint Summary] ${sprintName}: Adding summary`, summary);
     
-    const summaryElement = createSummaryElement(summary);
+    const summaryElement = createSummaryElement(summary, detailedData);
     
     statsArea.insertBefore(summaryElement, statsArea.firstChild);
     
@@ -339,8 +474,6 @@ function updateUI(usePlaceholders = false) {
     injectedSprints.add(containerId);
   });
 }
-
-// We're removing the API interception since we only need to update on page load
 
 // Run on page load
 console.log("[Sprint Summary] Extension loaded");
